@@ -4481,4 +4481,413 @@ export function calculateExactLocation(lat: number, lon: number, distance: numbe
 }
 ```
 
-- `maps`
+- `maps` this is the maps page you see from the main landing page where you can see all your local unsynced entries on the map.
+
+```
+import React, {useEffect, useState} from 'react';
+import {StyleSheet, Text, View} from 'react-native';
+import {useDrawerStatus} from '@react-navigation/drawer';
+import MapView, {
+  Callout,
+  LatLng,
+  MapPressEvent,
+  MapType,
+  Marker,
+  MarkerDragStartEndEvent,
+  PROVIDER_GOOGLE,
+  Region,
+} from 'react-native-maps'; // remove PROVIDER_GOOGLE import if not using Google Maps
+import {retrieveAllData} from '../localStorage';
+import {useMMKV, useMMKVListener} from 'react-native-mmkv';
+
+const styles = StyleSheet.create({
+  container: {
+    ...StyleSheet.absoluteFillObject,
+    height: '100%',
+    width: '100%',
+    justifyContent: 'flex-end',
+    alignItems: 'center',
+  },
+  map: {
+    ...StyleSheet.absoluteFillObject,
+  },
+});
+
+function MapScreen({navigation, route}: {navigation: any; route: any}) {
+  const [dataArray, setDataArray] = useState<any[]>([]);
+  const [region, setRegion] = useState<any>(undefined);
+  // const dataArray = retrieveAllData();
+  const isDrawerOpen = useDrawerStatus() === 'open';
+  useMMKVListener(key => {
+    setDataArray(retrieveAllData());
+    if (dataArray[dataArray.length - 1] != undefined)
+      setRegion({
+        latitude: dataArray[dataArray.length - 1]?.latitude,
+        longitude: dataArray[dataArray.length - 1]?.longitude,
+        latitudeDelta: 0.0015,
+        longitudeDelta: 0.0015,
+      });
+    else setRegion(undefined);
+  });
+  useEffect(() => {
+    setDataArray(retrieveAllData());
+    if (dataArray[dataArray.length - 1] != undefined)
+      setRegion({
+        latitude: dataArray[dataArray.length - 1]?.latitude,
+        longitude: dataArray[dataArray.length - 1]?.longitude,
+        latitudeDelta: 0.0015,
+        longitudeDelta: 0.0015,
+      });
+    else setRegion(undefined);
+  }, [isDrawerOpen]);
+  console.log(isDrawerOpen, route.name, 'IS THE TITLE');
+  if (route.name == 'mapplotting')
+    return (
+      <View style={styles.container}>
+        <MapView
+          mapType={'satellite'}
+          provider={PROVIDER_GOOGLE} // remove if not using Google Maps
+          style={styles.map}
+          region={region}
+          loadingEnabled={true}
+          loadingIndicatorColor={'grey'}
+          showsUserLocation={true}
+          onMapReady={() => {
+            setDataArray(retrieveAllData());
+            if (dataArray[dataArray.length - 1] != undefined)
+              setRegion({
+                latitude: dataArray[dataArray.length - 1]?.latitude,
+                longitude: dataArray[dataArray.length - 1]?.longitude,
+                latitudeDelta: 0.0015,
+                longitudeDelta: 0.0015,
+              });
+            else setRegion(undefined);
+          }}
+          showsMyLocationButton={true}>
+          {dataArray.map((value, id) => {
+            return (
+              <>
+                <Marker
+                  key={id}
+                  coordinate={{
+                    latitude: value.latitude,
+                    longitude: value.longitude,
+                  }}
+                  tappable>
+                  <Callout tooltip={false} style={{borderRadius: 10}}>
+                    <Text style={{color: 'blue'}}>{value.landCoverType}</Text>
+                  </Callout>
+                </Marker>
+              </>
+            );
+          })}
+        </MapView>
+      </View>
+    );
+  else return null;
+}
+
+export default MapScreen;
+
+```
+
+- The `networking` module of this project, it contains important code for `syncing` the data in steps, and then deleting that data locally.
+
+It makes requests to the `/sync` endpoint and the endpoint for images, and to the `/sync/image`. The data uploaded is atomic, meaning either it is completely saved in the data base, or it's completely skipped, meaning if the upload fails, this transaction for this entry with images is rolled back automatically, and the design for this is inside the backend, and this decision to push or roll back is based on the last request to upload the image at the `/sync/image` endpoint.
+
+```
+import React from 'react';
+import axios, { AxiosResponse } from 'axios';
+import { Dirs, FileSystem, } from 'react-native-file-access';
+import * as RNFS from "react-native-fs"
+import { getBottomIndexCount, getJwt, retrieveAllData, setBottomIndex } from '../localStorage';
+import { Alert, ToastAndroid } from 'react-native';
+import axiosRetry from 'axios-retry';
+import { MessageProp } from '../components/LandingPage';
+// import 'dotenv/config'
+// const response = await axios.post(
+//   'http://10.0.2.2:3000/api/v1/sync',
+//   {
+//     fileData: fileData
+//   }
+// );
+// export const BACKEND_URL = "http://10.0.2.2:8090/";
+export const BACKEND_URL = "http://maps.icrisat.org/";
+// export const BACKEND_URL = "http://192.168.0.107:8090/";
+
+axiosRetry(axios, {
+  retries: 3,
+  retryDelay: (...arg) => axiosRetry.exponentialDelay(...arg, 700),
+  retryCondition(error) {
+    switch (error?.response?.status) {
+      //retry only if status is 500 or 501
+      case 500:
+      case 501:
+        return true;
+      default:
+        return false;
+    }
+  },
+  // onRetry: (retryCount, error, requestConfig) => {
+  //   console.log(`retry count: `, retryCount);
+  //   if (retryCount == 2) {
+  //     requestConfig.url = 'https://postman-echo.com/status/200';
+  //   }
+  // },
+});
+
+
+const sendData = async (data: any) => {
+  const jwt = getJwt();
+  const response = await axios.post(
+    BACKEND_URL + 'api/v1/sync/',
+    {
+      ...data,
+      noOfImages: data.images.length
+    }
+    , {
+      headers: {
+        Authorization: `Bearer ${jwt}`
+      }
+    }
+  );
+  console.log(response.data.success, " IS THE SUCCESS")
+  return response;
+}
+
+const sendImage = async (fileName: string, dataId: number) => {
+  try {
+    console.log(dataId, "IS THE ID")
+    const fileData = await RNFS.readFile(fileName, 'base64');
+    const jwt = getJwt();
+    const response = await axios.post(
+      BACKEND_URL + 'api/v1/sync/image/',
+      {
+        fileData: fileData,
+        dataId: dataId
+      }
+      , {
+        headers: {
+          Authorization: `Bearer ${jwt}`
+        }
+      }
+    )
+    return response
+  }
+  catch (error) {
+    console.log("an error occured")
+    Alert.alert("And error with " + error + " occured");
+    return {
+      data: {
+        success: false
+      }
+    } as AxiosResponse<any, any>
+  }
+}
+
+
+const sendAnEntry = async (data: any, textSetter: (callBack: (message: MessageProp) => MessageProp) => void) => {
+  try {
+    const response: AxiosResponse = await sendData(data);
+    const dataId = response.data.dataId;
+    console.log(dataId, "IS THE ID")
+    let counter = 1;
+    // throw Error();
+    if (data.landCoverType == "Cropland")
+      if (data.images < 1) {
+        Alert.alert("Duplicate unintegral data found, deleting..")
+        return true;
+      }
+    for (let a of data.images) {
+      textSetter((value: MessageProp) => {
+        return {
+          message1: value.message1,
+          message2: `Uploading image - ${counter}`,
+          show: true
+        }
+      })
+      const responseImage = await sendImage(a, response.data.dataId);
+      if (!responseImage.data.success) throw Error("Image upload failed")
+      counter++;
+    }
+    return true;
+  }
+  catch (error) {
+    console.log(error)
+    return false
+  }
+}
+
+export const upload = async (setDisabled: () => void, textSetter: (message: (message: MessageProp) => MessageProp) => void) => {
+  const dataArray = retrieveAllData()
+  let counter = 1;
+  for (let a of dataArray) {
+    let images = a.images;
+    textSetter((value: MessageProp) => {
+      return {
+        message1: `Uploading entry - ${counter}`,
+        message2: "",
+        show: true
+      }
+    })
+    counter++;
+    console.log(a, 'IS THE DATA')
+    let success = await sendAnEntry(a, textSetter);
+    if (success) {
+      let bottomIndex = getBottomIndexCount();
+      if (bottomIndex) {
+        setBottomIndex(bottomIndex + 1);
+        let deletePromise: Promise<void>[] = []
+        console.log(images)
+        // for (let filename of images) {
+        //   await (RNFS.unlink(filename));
+        // }
+      }
+      else {
+        console.log("bottom index error")
+      }
+    }
+    else {
+      Alert.alert("get a better internet connection, syncing failed")
+      break;
+    }
+  }
+  textSetter((value) => {
+    return {
+      message1: `SYNC COMPLETED`,
+      message2: "",
+      show: true
+    }
+  })
+  setTimeout(() => {
+    textSetter((value) => {
+      return {
+        ...value,
+        show: false
+      }
+    })
+  }, 2000)
+  setDisabled()
+  console.log('inside of the networking module');
+};
+```
+
+- `store` folder, this creates the store for the `redux store`
+
+index.ts
+
+```
+import { configureStore } from '@reduxjs/toolkit'
+import dataFormReducer from '../features/DataCollectionSlice'
+import LocationReducer from '../features/LocationSlice'
+import UIReducer from '../features/UISlice'
+
+export default configureStore({
+  reducer: {
+    dataform: dataFormReducer,
+    location: LocationReducer,
+    ui: UIReducer
+  }
+})
+```
+
+- `types` folder, it contains types to handle position data.
+
+```
+export interface Position {
+  coords: {
+    latitude: number;
+    longitude: number;
+    altitude: number | null;
+    accuracy: number;
+    altitudeAccuracy: number | null;
+    heading: number | null;
+    speed: number | null;
+  };
+  timestamp: number;
+}
+
+export interface PositionError {
+  error: {
+    code: number;
+    message: string;
+    PERMISSION_DENIED: number;
+    POSITION_UNAVAILABLE: number;
+    TIMEOUT: number;
+  };
+}
+```
+
+- package.json
+
+the final package.json
+
+```
+{
+  "name": "iCrops",
+  "version": "0.0.1",
+  "private": true,
+  "scripts": {
+    "android": "react-native run-android",
+    "ios": "react-native run-ios",
+    "lint": "eslint .",
+    "start": "react-native start",
+    "test": "jest"
+  },
+  "dependencies": {
+    "@miblanchard/react-native-slider": "^2.3.1",
+    "@react-native-camera-roll/camera-roll": "^7.5.0",
+    "@react-native-community/geolocation": "^3.2.0",
+    "@react-native-community/masked-view": "^0.1.11",
+    "@react-native-community/netinfo": "^11.3.1",
+    "@react-native/gradle-plugin": "^0.74.84",
+    "@react-navigation/bottom-tabs": "^6.5.20",
+    "@react-navigation/drawer": "^6.6.14",
+    "@react-navigation/native": "^6.1.16",
+    "@reduxjs/toolkit": "^2.2.1",
+    "@types/react-native-fetch-blob": "^0.10.11",
+    "@types/react-native-fs": "^2.13.0",
+    "axios": "^1.6.8",
+    "axios-retry": "^4.4.0",
+    "os": "^0.1.2",
+    "path": "^0.12.7",
+    "react": "18.2.0",
+    "react-native": "0.73.6",
+    "react-native-bootsplash": "^5.5.3",
+    "react-native-compass-heading": "^1.5.0",
+    "react-native-date-picker": "^4.4.2",
+    "react-native-file-access": "^3.0.7",
+    "react-native-fs": "^2.20.0",
+    "react-native-gesture-handler": "^2.15.0",
+    "react-native-image-marker": "^1.2.6",
+    "react-native-image-picker": "^7.1.1",
+    "react-native-maps": "^1.11.3",
+    "react-native-mmkv": "^2.12.2",
+    "react-native-radio-buttons-group": "^3.1.0",
+    "react-native-reanimated": "^3.8.1",
+    "react-native-safe-area-context": "^4.9.0",
+    "react-native-screens": "^3.29.0",
+    "react-redux": "^9.1.0"
+  },
+  "devDependencies": {
+    "@babel/core": "^7.20.0",
+    "@babel/preset-env": "^7.20.0",
+    "@babel/runtime": "^7.20.0",
+    "@react-native/babel-preset": "0.73.21",
+    "@react-native/eslint-config": "0.73.2",
+    "@react-native/metro-config": "0.73.5",
+    "@react-native/typescript-config": "0.73.1",
+    "@types/react": "^18.2.6",
+    "@types/react-test-renderer": "^18.0.0",
+    "babel-jest": "^29.6.3",
+    "eslint": "^8.19.0",
+    "jest": "^29.6.3",
+    "prettier": "2.8.8",
+    "react-test-renderer": "18.2.0",
+    "typescript": "5.0.4"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
+```
